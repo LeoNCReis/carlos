@@ -34,19 +34,21 @@
 const int TOTAL_LINHAS = 3;
 
 // Velocidades
-const int BASE_SPEED = 180;
+const int BASE_SPEED = 170;
 const int CURVE_SPEED = 90;
 const int SHARP_TURN_SPEED = 80;
 const int MIN_MOTOR_SPEED = 70;
 const int TURN_SPEED = 30;
 const int AJUSTE_ESQUERDO = 14;
+const int AJUSTE_DIREITO = 0;
 const int SENSIBILIDADE = 850;
-const int LDR_THRESHOLD = 420;
+const int LDR_THRESHOLD = 90;
+const int BUZZER_ATIVO = LOW; // HIGH = buzzer ligado | LOW = buzzer sempre desligado
 const unsigned long DEBOUNCE_MS = 50;
 
 // Constantes PID
-const float Kp = 40.0;
-const float Ki = 0.1;
+const float Kp = 45.0;
+const float Ki = 0.05;
 const float Kd = 25.0;
 
 // Estado do robô
@@ -80,8 +82,17 @@ void setMotors(int left, int right) {
   int l = left;
   int r = right;
   if (l >= 0) l += AJUSTE_ESQUERDO;
+  if (r >= 0) r += AJUSTE_DIREITO;
   l = constrain(l, -255, 255);
   r = constrain(r, -255, 255);
+
+  if (l >= 0) { analogWrite(FESQ, l); analogWrite(TESQ, 0); } else { analogWrite(FESQ, 0); analogWrite(TESQ, abs(l)); }
+  if (r >= 0) { analogWrite(FDIR, r); analogWrite(TDIR, 0); } else { analogWrite(FDIR, 0); analogWrite(TDIR, abs(r)); }
+}
+
+void setMotorsRaw(int left, int right) {
+  int l = constrain(left, -255, 255);
+  int r = constrain(right, -255, 255);
 
   if (l >= 0) { analogWrite(FESQ, l); analogWrite(TESQ, 0); } else { analogWrite(FESQ, 0); analogWrite(TESQ, abs(l)); }
   if (r >= 0) { analogWrite(FDIR, r); analogWrite(TDIR, 0); } else { analogWrite(FDIR, 0); analogWrite(TDIR, abs(r)); }
@@ -158,7 +169,7 @@ void loop() {
   int ldrValue = analogRead(LDR);
   if (ldrValue < LDR_THRESHOLD) {
     digitalWrite(LED, HIGH);
-    digitalWrite(BUZZER, HIGH);
+    digitalWrite(BUZZER, BUZZER_ATIVO);
   } else {
     digitalWrite(LED, LOW);
     digitalWrite(BUZZER, LOW);
@@ -199,21 +210,31 @@ void loop() {
   
   lostLineTime = 0;
   
-  // Curvas fechadas 90°
-  bool curvaFechadaEsquerda = (le && ce && !cd && !ld);
-  bool curvaFechadaDireita = (!le && !ce && cd && ld);
+  // Curvas de 90° - detecção mais rigorosa
+  // Curva fechada esquerda: LE+CE OU só LE (sem CD e LD)
+  bool curvaEsquerda = ((le && ce && !cd && !ld) || (le && !ce && !cd && !ld));
   
-  if (curvaFechadaEsquerda) {
-    setMotors(0, 180);
-    delay(1);
+  // Curva fechada direita: CD+LD OU só LD (sem LE e CE)
+  bool curvaDireita = ((cd && ld && !le && !ce) || (ld && !cd && !le && !ce));
+  
+  // Curvas acentuadas (3 sensores) - quase 90°
+  bool curvaAcentuadaEsq = (le && ce && cd && !ld);
+  bool curvaAcentuadaDir = (!le && ce && cd && ld);
+  
+  if (curvaEsquerda) {
+    setMotorsRaw(0, 200);
+    delay(80);
     return;
   }
   
-  if (curvaFechadaDireita) {
-    setMotors(180, 0);
-    delay(1);
+  if (curvaDireita) {
+    setMotorsRaw(200, 0);
+    delay(80);
     return;
   }
+  
+  // Para curvas acentuadas, usa PID mas com correção forçada ao máximo
+  bool curvaAcentuada = curvaAcentuadaEsq || curvaAcentuadaDir;
   
   // Detecção de linhas horizontais
   bool linhaHorizontalAtual = detectarLinhaHorizontal(le, ce, cd, ld);
@@ -241,7 +262,7 @@ void loop() {
   
   if (le) { position += -2; sensorCount++; }
   if (ce) { position += -1; sensorCount++; }
-  if (cd) { position += -1; sensorCount++; }
+  if (cd) { position += 1; sensorCount++; }
   if (ld) { position += 2; sensorCount++; }
   
   if (sensorCount > 0) {
@@ -252,12 +273,20 @@ void loop() {
   
   float P = error * Kp;
   integral += error;
-  integral = constrain(integral, -100, 100);
+  integral = constrain(integral, -200, 200);
   float I = integral * Ki;
   float D = (error - lastError) * Kd;
   
   float correction = P + I + D;
-  correction = constrain(correction, -50, 50);
+  
+  // Força correção máxima em curvas acentuadas
+  if (curvaAcentuadaEsq) {
+    correction = -70;
+  } else if (curvaAcentuadaDir) {
+    correction = 70;
+  } else {
+    correction = constrain(correction, -70, 70);
+  }
   
   int leftMotorSpeed = BASE_SPEED + correction;
   int rightMotorSpeed = BASE_SPEED - correction;
